@@ -1,38 +1,30 @@
 import time
 
-# минимальный интервал между запросами
-RATE_LIMIT_SECONDS = 15
-
-# храним время последнего запроса от каждого пользователя
-last_request_time = {}
+# user_id → timestamp последнего запроса
+RATE_LIMIT = {}
+LIMIT_SECONDS = 30   # 1 запрос в 30 сек
 
 
-def is_allowed(user_id: int) -> bool:
+def is_rate_limited(user_id: int) -> bool:
     """
-    Проверяет, можно ли пользователю выполнять новый запрос.
+    Возвращает:
+    True — если пользователю нужно подождать
+    False — если можно выполнять следующий запрос
     """
-    current_time = time.time()
 
-    if user_id not in last_request_time:
-        last_request_time[user_id] = current_time
+    now = time.time()
+
+    # Если пользователь впервые — нет лимита
+    if user_id not in RATE_LIMIT:
+        RATE_LIMIT[user_id] = now
+        return False
+
+    last_time = RATE_LIMIT[user_id]
+
+    if now - last_time < LIMIT_SECONDS:
+        # Превышен лимит
         return True
 
-    if current_time - last_request_time[user_id] >= RATE_LIMIT_SECONDS:
-        last_request_time[user_id] = current_time
-        return True
-
+    # Обновляем timestamp
+    RATE_LIMIT[user_id] = now
     return False
-
-
-def get_wait_message(user_id: int) -> str:
-    """
-    Сообщение, которое бот отправляет пользователю,
-    если нужно подождать.
-    """
-    last_time = last_request_time.get(user_id, 0)
-    wait = RATE_LIMIT_SECONDS - (time.time() - last_time)
-
-    if wait < 1:
-        wait = 1
-
-    return f"⏳ Пожалуйста, подождите {int(wait)} секунд перед следующим запросом."
