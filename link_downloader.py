@@ -1,75 +1,44 @@
 import os
 import uuid
-import requests
+import asyncio
 import yt_dlp
 
 
-# ---------------------------------------------------------
-# Универсальный загрузчик видео по ссылке
-# ---------------------------------------------------------
-async def download_video_from_url(url: str) -> str:
-    os.makedirs("downloads", exist_ok=True)
-    filename = f"downloads/{uuid.uuid4()}.mp4"
+DOWNLOAD_DIR = "downloads"
 
-    # 1) YouTube, Vimeo, соцсети — через yt-dlp
-    if "youtube.com" in url or "youtu.be" in url or "vimeo.com" in url:
-        ydl_opts = {
-            "outtmpl": filename,
-            "format": "mp4/bestvideo+bestaudio/best"
-        }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        return filename
-
-    # 2) Google Drive (прямая ссылка на файл)
-    if "drive.google.com" in url:
-        file_id = _extract_drive_id(url)
-        if file_id:
-            download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-            return _download_direct(download_url, filename)
-
-    # 3) Dropbox → превращаем dl=0 в dl=1
-    if "dropbox.com" in url:
-        if "?dl=0" in url:
-            url = url.replace("?dl=0", "?dl=1")
-        return _download_direct(url, filename)
-
-    # 4) Яндекс.Диск (API качает прямую ссылку)
-    if "yadi.sk" in url or "disk.yandex" in url:
-        api_url = "https://cloud-api.yandex.net/v1/disk/public/resources/download"
-        resp = requests.get(api_url, params={"public_key": url}).json()
-        return _download_direct(resp.get("href"), filename)
-
-    # 5) Прямые ссылки (mp4, mov, avi)
-    if url.lower().endswith((".mp4", ".mov", ".avi", ".mkv")):
-        return _download_direct(url, filename)
-
-    # fallback
-    return _download_direct(url, filename)
+# создаём папку, если нет
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 
-# ---------------------------------------------------------
-# Google Drive — получение ID
-# ---------------------------------------------------------
-def _extract_drive_id(url: str):
-    if "id=" in url:
-        return url.split("id=")[1].split("&")[0]
-    if "/d/" in url:
-        return url.split("/d/")[1].split("/")[0]
-    return None
+async def download_video_by_link(url: str) -> str:
+    """
+    Скачивает видео по ссылке (YouTube / прямые ссылки / соцсети)
+    Возвращает путь к локальному файлу или None при ошибке
+    """
+
+    temp_name = str(uuid.uuid4()) + ".mp4"
+    output_path = os.path.join(DOWNLOAD_DIR, temp_name)
+
+    ydl_opts = {
+        "outtmpl": output_path,
+        "format": "bestvideo+bestaudio/best",
+        "retries": 3,
+        "quiet": True,
+        "noprogress": True,
+        "merge_output_format": "mp4",
+    }
+
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, lambda: _download_sync(url, ydl_opts))
+        return output_path
+
+    except Exception as e:
+        print("DOWNLOAD ERROR:", e)
+        return None
 
 
-# ---------------------------------------------------------
-# Прямое скачивание файла
-# ---------------------------------------------------------
-def _download_direct(url: str, filename: str) -> str:
-    r = requests.get(url, stream=True)
-    r.raise_for_status()
-
-    with open(filename, "wb") as f:
-        for chunk in r.iter_content(chunk_size=8192):
-            f.write(chunk)
-
-    return filename
+def _download_sync(url, options):
+    """Синхронная часть yt-dlp — выносится в executor"""
+    with yt_dlp.YoutubeDL(options) as ydl:
+        ydl.download([url])
