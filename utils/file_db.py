@@ -1,122 +1,49 @@
-import sqlite3
+import json
 import os
-from datetime import datetime
 
-DB_PATH = "skriptor.db"
+DB_PATH = "database.json"
 
-
-# ---------------------------------------------------------
-# Создание базы при старте
-# ---------------------------------------------------------
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    # Таблица пользователей
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        first_seen TEXT
-    )
-    """)
-
-    # Таблица запросов
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS files (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        source TEXT,
-        file_size_mb REAL,
-        pdf_path TEXT,
-        md_path TEXT,
-        created_at TEXT
-    )
-    """)
-
-    conn.commit()
-    conn.close()
+# Если база пустая — создадим
+if not os.path.exists(DB_PATH):
+    with open(DB_PATH, "w", encoding="utf-8") as f:
+        json.dump({}, f)
 
 
-# ---------------------------------------------------------
-# Регистрация нового пользователя
-# ---------------------------------------------------------
-def register_user(user_id: int, username: str = None):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    cur.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
-    exists = cur.fetchone()
-
-    if not exists:
-        cur.execute(
-            "INSERT INTO users (user_id, username, first_seen) VALUES (?, ?, ?)",
-            (user_id, username, datetime.now().isoformat())
-        )
-
-    conn.commit()
-    conn.close()
+def load_db():
+    """Загружает базу"""
+    with open(DB_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
-# ---------------------------------------------------------
-# Логируем обработанный файл
-# ---------------------------------------------------------
-def log_file(user_id: int, source: str, size: float, pdf: str, md: str):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    cur.execute(
-        "INSERT INTO files (user_id, source, file_size_mb, pdf_path, md_path, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (user_id, source, size, pdf, md, datetime.now().isoformat())
-    )
-
-    conn.commit()
-    conn.close()
+def save_db(data):
+    """Сохраняет базу"""
+    with open(DB_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-# ---------------------------------------------------------
-# Количество пользователей
-# ---------------------------------------------------------
-def get_user_count() -> int:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
+def increase_usage(user_id: int):
+    """
+    Увеличивает счётчик использования бота этим пользователем.
+    Для будущих тарифов/лимитов.
+    """
 
-    cur.execute("SELECT COUNT(*) FROM users")
-    count = cur.fetchone()[0]
+    user_id = str(user_id)
+    db = load_db()
 
-    conn.close()
-    return count
+    if user_id not in db:
+        db[user_id] = {"usage": 0}
 
-
-# ---------------------------------------------------------
-# Количество обработанных видео
-# ---------------------------------------------------------
-def get_file_count() -> int:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-
-    cur.execute("SELECT COUNT(*) FROM files")
-    count = cur.fetchone()[0]
-
-    conn.close()
-    return count
+    db[user_id]["usage"] += 1
+    save_db(db)
 
 
-# ---------------------------------------------------------
-# Последние N обработанных файлов
-# ---------------------------------------------------------
-def get_last_files(limit: int = 10):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
+def get_usage(user_id: int) -> int:
+    """Возвращает количество использований пользователем."""
 
-    cur.execute("""
-    SELECT users.username, files.source, files.pdf_path, files.created_at
-    FROM files
-    JOIN users ON users.user_id = files.user_id
-    ORDER BY files.id DESC
-    LIMIT ?
-    """, (limit,))
+    db = load_db()
+    user_id = str(user_id)
 
-    rows = cur.fetchall()
-    conn.close()
-    return rows
+    if user_id not in db:
+        return 0
+
+    return db[user_id].get("usage", 0)
