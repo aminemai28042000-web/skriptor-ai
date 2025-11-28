@@ -1,2 +1,9 @@
-aiogram
-openai
+aiogram==3.4.1
+openai>=1.12.0
+yt-dlp
+aiofiles
+reportlab
+requests
+pydub
+ffmpeg-python
+python-dotenv
