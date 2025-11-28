@@ -1,111 +1,115 @@
 import os
 import asyncio
-import logging
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
-from aiogram.filters import CommandStart
 from aiogram.enums import ParseMode
 
-from utils.link_downloader import download_video_from_url
-from utils.transcriber import transcribe_audio
-from utils.file_generators import generate_pdf, generate_markdown
-from utils.formatter import format_transcript
+from link_downloader import download_video_by_link
+from transcriber import process_audio_or_video
+from file_generators import generate_pdf, generate_markdown
+from formatter import format_transcript
+from utils.rate_limiter import is_rate_limited
+from utils.csv_logger import log_event
 
-API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-logging.basicConfig(level=logging.INFO)
-
-bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
 
-# ===========================
-# /start
-# ===========================
-@dp.message(CommandStart())
-async def start(message: Message):
-    await message.answer(
-        "<b>👋 Привет! Я — Скриптор AI.</b>\n\n"
-        "Загрузи видео или отправь ссылку, и я сделаю для тебя:\n"
-        "• Полную транскрибацию\n"
-        "• Структурированную PDF\n"
-        "• Markdown-конспект\n\n"
-        "Видео можно отправлять до 2 ГБ.\n"
-        "Ссылки — без ограничений."
+# ---------- ОБРАБОТКА СООБЩЕНИЙ ---------- #
+
+@dp.message(F.text)
+async def handle_text(message: Message):
+    text = message.text.strip()
+
+    # Анти-спам (лимит 1 запрос / 30 сек)
+    if is_rate_limited(message.from_user.id):
+        await message.reply("⚠️ Подождите немного перед следующим запросом.")
+        return
+
+    log_event(message.from_user.id, "text_input", text)
+
+    # Если ссылка — скачиваем
+    if (
+        "http://"
+        in text
+        or "https://"
+        in text
+        or "youtu.be" in text
+        or "youtube.com" in text
+    ):
+        await message.reply("🔄 Скачиваю видео по ссылке…")
+
+        file_path = await download_video_by_link(text)
+
+        if not file_path:
+            await message.reply("❌ Не удалось скачать это видео. Попробуйте другое.")
+            return
+
+        await handle_file(message, file_path)
+        return
+
+    await message.reply(
+        "Отправьте видео/аудио или ссылку для транскрибации 🎧"
     )
 
 
-# ===========================
-# обработка ссылки
-# ===========================
-@dp.message(F.text.startswith("http"))
-async def handle_url(message: Message):
-    url = message.text.strip()
-    status = await message.answer("⏳ Загружаю видео по ссылке...")
-
-    try:
-        filepath = await download_video_from_url(url)
-        await status.edit_text("🎬 Видео скачано. Начинаю распознавание...")
-    except Exception as e:
-        await status.edit_text("❌ Ошибка при загрузке видео.")
+@dp.message(F.video | F.audio | F.document)
+async def handle_media(message: Message):
+    # Анти-спам
+    if is_rate_limited(message.from_user.id):
+        await message.reply("⚠️ Подождите немного перед следующим запросом.")
         return
 
-    await process_video(message, filepath, status)
+    log_event(message.from_user.id, "file_input", "Media Upload")
+
+    file = await message.bot.get_file(message.document.file_id if message.document else (message.video.file_id if message.video else message.audio.file_id))
+    file_path = f"downloads/{file.file_unique_id}"
+
+    await bot.download_file(file.file_path, file_path)
+
+    await handle_file(message, file_path)
 
 
-# ===========================
-# обработка загруженного видео
-# ===========================
-@dp.message(F.video | F.document)
-async def handle_video(message: Message):
-    status = await message.answer("⏳ Загружаю файл...")
+# ---------- ОСНОВНАЯ ОБРАБОТКА ФАЙЛОВ ---------- #
 
-    file = message.video or message.document
-    file_info = await bot.get_file(file.file_id)
+async def handle_file(message: Message, file_path: str):
+    await message.reply("🎙️ Обрабатываю файл…")
 
-    filepath = f"downloads/{file.file_id}.mp4"
-    os.makedirs("downloads", exist_ok=True)
+    transcript, summary = await process_audio_or_video(file_path)
 
-    await bot.download_file(file_info.file_path, filepath)
-    await status.edit_text("🎬 Видео загружено. Начинаю распознавание...")
+    if not transcript:
+        await message.reply("❌ Ошибка обработки. Попробуйте другое видео.")
+        return
 
-    await process_video(message, filepath, status)
+    formatted_transcript = format_transcript(transcript)
 
+    # Генерация файлов
+    pdf_path = generate_pdf(formatted_transcript, summary)
+    md_path = generate_markdown(formatted_transcript, summary)
 
-# ===========================
-# общий процесс обработки видео
-# ===========================
-async def process_video(message: Message, filepath: str, status_msg: Message):
+    await message.reply("📄 Готово! Отправляю файлы…")
+
+    # Отправка пользователю
+    await message.reply_document(open(pdf_path, "rb"))
+    await message.reply_document(open(md_path, "rb"))
+
+    # Чистим мусор
     try:
-        text = await transcribe_audio(filepath)
+        os.remove(file_path)
+        os.remove(pdf_path)
+        os.remove(md_path)
+    except:
+        pass
 
-        await status_msg.edit_text("📝 Форматирую текст...")
-        clean_text = format_transcript(text)
-
-        await status_msg.edit_text("📄 Генерирую файлы...")
-
-        pdf_path = generate_pdf(clean_text)
-        md_path = generate_markdown(clean_text)
-
-        await status_msg.edit_text("✅ Готово! Файлы готовы к скачиванию.")
-
-        await message.answer_document(document=open(pdf_path, "rb"))
-        await message.answer_document(document=open(md_path, "rb"))
-
-    except Exception as e:
-        await status_msg.edit_text(f"❌ Ошибка при обработке: {e}")
-
-    finally:
-        if os.path.exists(filepath):
-            os.remove(filepath)
+    log_event(message.from_user.id, "complete", "Success")
 
 
-# ===========================
-# запуск
-# ===========================
+# ---------- ЗАПУСК БОТА ---------- #
+
 async def main():
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
 
 
 if __name__ == "__main__":
