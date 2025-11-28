@@ -1,61 +1,93 @@
 import os
-from datetime import datetime
-from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
-from reportlab.pdfbase import pdfmetrics
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.units import cm
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfbase import pdfmetrics
 
 
-# регистрируем шрифт с поддержкой кириллицы
-pdfmetrics.registerFont(TTFont("DejaVu", "DejaVuSans.ttf"))
+EXPORTS_DIR = "exports"
+os.makedirs(EXPORTS_DIR, exist_ok=True)
 
 
-# ---------------------------------------------------------
-# Генерация PDF
-# ---------------------------------------------------------
-def generate_pdf(text: str) -> str:
-    os.makedirs("exports", exist_ok=True)
-
-    filename = f"exports/SkriptorAI_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-
-    c = canvas.Canvas(filename, pagesize=A4)
-    c.setFont("DejaVu", 11)
-
-    width, height = A4
-    x = 40
-    y = height - 50
-
-    # перенос строк
-    def split_line(line, max_chars=95):
-        return [line[i:i + max_chars] for i in range(0, len(line), max_chars)]
-
-    for paragraph in text.split("\n"):
-        if not paragraph.strip():
-            y -= 15
-            continue
-
-        for line in split_line(paragraph):
-            c.drawString(x, y, line)
-            y -= 15
-
-            if y < 50:
-                c.showPage()
-                c.setFont("DejaVu", 11)
-                y = height - 50
-
-    c.save()
-    return filename
+# -----------------------------------
+#  Регистрация шрифта для кириллицы
+# -----------------------------------
+try:
+    pdfmetrics.registerFont(TTFont("DejaVuSans", "DejaVuSans.ttf"))
+except:
+    # fallback — если файл отсутствует на сервере
+    pass
 
 
-# ---------------------------------------------------------
-# Генерация Markdown
-# ---------------------------------------------------------
-def generate_markdown(text: str) -> str:
-    os.makedirs("exports", exist_ok=True)
+def generate_pdf(transcript: str, summary: str):
+    """
+    Создаёт красивый PDF-файл:
+    - транскрипт
+    - summary
+    - заголовки
+    """
 
-    filename = f"exports/SkriptorAI_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    filename = "Skriptoria_Transcript.pdf"
+    path = os.path.join(EXPORTS_DIR, filename)
 
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(text)
+    doc = SimpleDocTemplate(
+        path,
+        pagesize=A4,
+        leftMargin=2 * cm,
+        rightMargin=2 * cm,
+        topMargin=2 * cm,
+        bottomMargin=2 * cm,
+    )
 
-    return filename
+    styles = getSampleStyleSheet()
+    story = []
+
+    # Заголовок
+    story.append(Paragraph("<b>🟣 Скриптор AI — Транскрипт</b>", styles['Title']))
+    story.append(Spacer(1, 0.5 * cm))
+
+    # Summary
+    story.append(Paragraph("<b>📌 Summary</b>", styles['Heading2']))
+    for block in summary.split("\n"):
+        story.append(Paragraph(block, styles['Normal']))
+        story.append(Spacer(1, 0.3 * cm))
+
+    story.append(Spacer(1, 1 * cm))
+
+    # Транскрипт
+    story.append(Paragraph("<b>🎙 Полная расшифровка</b>", styles['Heading2']))
+
+    for paragraph in transcript.split("\n"):
+        story.append(Paragraph(paragraph, styles['Normal']))
+        story.append(Spacer(1, 0.2 * cm))
+
+    doc.build(story)
+
+    return path
+
+
+
+def generate_markdown(transcript: str, summary: str):
+    """
+    Создаёт Markdown-файл (.md) с:
+    - summary
+    - транскриптом
+    """
+
+    filename = "Skriptoria_Transcript.md"
+    path = os.path.join(EXPORT_DIR, filename)
+
+    content = (
+        "# 🟣 Скриптор AI — Summary\n\n"
+        + summary
+        + "\n\n---\n\n"
+        + "# 🎙 Полный транскрипт\n\n"
+        + transcript
+    )
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    return path
