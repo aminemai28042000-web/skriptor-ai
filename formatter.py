@@ -1,59 +1,84 @@
 import re
 
 
-def clean_raw_text(text: str) -> str:
-    """Убираем мусор, системные символы и приводим к нормальному виду"""
+# ---------------------------------------------------------
+# Основной форматтер текста
+# ---------------------------------------------------------
+def format_transcript(text: str) -> str:
+    text = _cleanup(text)
+    paragraphs = _split_paragraphs(text)
+    paragraphs = _add_auto_headings(paragraphs)
 
-    # удаляем двойные пробелы
-    text = re.sub(r"\s+", " ", text)
-
-    # убираем мусор в виде повторяющихся знаков
-    text = re.sub(r"[—–-]{2,}", "-", text)
-
-    # удаляем случайные спецсимволы
-    text = re.sub(r"[^\S\r\n]+", " ", text)
-
-    # отрезаем пустые строки
-    text = text.strip()
-
-    return text
+    return "\n\n".join(paragraphs).strip()
 
 
-def split_into_paragraphs(text: str) -> str:
-    """Разбивает на абзацы — каждый абзац примерно по 3–4 предложения"""
+# ---------------------------------------------------------
+# Чистим текст от мусора
+# ---------------------------------------------------------
+def _cleanup(text: str) -> str:
+    # Убираем служебные символы
+    text = text.replace("\r", "").strip()
 
+    # Убираем повторяющиеся переносы
+    text = re.sub(r"\n{2,}", "\n", text)
+
+    # Паразитные слова / междометия
+    filler_words = [
+        r"\bэ+?м*\b", r"\bэээ+?\b", r"\bну\b", r"\bкак бы\b",
+        r"\bтипа\b", r"\bполучается\b", r"\bзначит\b", r"\bв общем\b"
+    ]
+    for w in filler_words:
+        text = re.sub(w, "", text, flags=re.IGNORECASE)
+
+    # Удаляем двойные пробелы
+    text = re.sub(r" {2,}", " ", text)
+
+    return text.strip()
+
+
+# ---------------------------------------------------------
+# Разбиваём на абзацы по смыслу
+# ---------------------------------------------------------
+def _split_paragraphs(text: str) -> list:
     sentences = re.split(r"(?<=[.!?])\s+", text)
+
     paragraphs = []
-    temp = []
+    current = ""
 
     for sentence in sentences:
-        temp.append(sentence)
-        if len(temp) >= 3:
-            paragraphs.append(" ".join(temp))
-            temp = []
+        if len(current) + len(sentence) < 300:  # удобная длина абзаца
+            current += sentence + " "
+        else:
+            paragraphs.append(current.strip())
+            current = sentence + " "
 
-    if temp:
-        paragraphs.append(" ".join(temp))
+    if current.strip():
+        paragraphs.append(current.strip())
 
-    return "\n\n".join(paragraphs)
-
-
-def make_headers(text: str) -> str:
-    """Добавляет визуальные 'блоки', чтобы текст выглядел структурно"""
-
-    formatted = (
-        "🟣 *Транскрипт*\n\n"
-        + text
-    )
-
-    return formatted
+    return paragraphs
 
 
-def format_transcript(raw_text: str) -> str:
-    """Главная функция форматирования"""
+# ---------------------------------------------------------
+# Автоматические подзаголовки
+# ---------------------------------------------------------
+def _add_auto_headings(paragraphs: list) -> list:
+    final = []
 
-    cleaned = clean_raw_text(raw_text)
-    paragraphs = split_into_paragraphs(cleaned)
-    structured = make_headers(paragraphs)
+    for p in paragraphs:
 
-    return structured
+        # если абзац длинный — делаем его отдельным смысловым блоком
+        if len(p) > 350:
+            final.append("## 📌 Новый смысловой блок")
+            final.append(p)
+            continue
+
+        # ключевые фразы → заголовки
+        triggers = ["итог", "вывод", "главное", "важно", "первое", "второе"]
+        if any(p.lower().startswith(t) for t in triggers):
+            p = "### " + p.capitalize()
+            final.append(p)
+            continue
+
+        final.append(p)
+
+    return final
