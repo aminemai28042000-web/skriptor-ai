@@ -1,150 +1,135 @@
 import os
 import asyncio
+import logging
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart
+from aiogram.enums import ParseMode
 from aiogram.types import FSInputFile
-from dotenv import load_dotenv
+from aiogram.filters import CommandStart
 
-from link_downloader import (
-    is_direct_link,
-    is_social_link,
-    is_youtube_link,
-    download_any,
-)
-
+from transcriber import process_audio_or_video
+from link_downloader import download_from_link
 from file_generators import generate_pdf, generate_markdown
 from formatter import format_transcript
-from transcriber import process_audio_or_video
 
+logging.basicConfig(level=logging.INFO)
 
-# ----------------- Очередь задач -----------------
-queue = asyncio.Queue()
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher()
+
+# Очередь задач (ограничение — 1 одновременная)
+task_queue = asyncio.Queue()
 processing = False
 
 
-async def worker():
-    """
-    Фоновый обработчик задач.
-    Позволяет обрабатывать запросы последовательно.
-    """
+# -------------------------------
+#   Обёртка очереди
+# -------------------------------
+async def queue_worker():
     global processing
+    if processing:
+        return
     processing = True
 
-    while True:
-        message = await queue.get()
+    while not task_queue.empty():
+        user_id, coro = await task_queue.get()
         try:
-            await handle_task(message)
+            await coro
         except Exception as e:
-            await message.answer(f"❌ Ошибка обработки: {e}")
-        finally:
-            queue.task_done()
+            await bot.send_message(user_id, f"❌ Ошибка обработки: {e}")
+        await asyncio.sleep(0.1)
+
+    processing = False
 
 
-# ----------------- Основная логика -----------------
+async def enqueue(message: types.Message, coro):
+    await task_queue.put((message.from_user.id, coro))
+    await queue_worker()
 
-async def handle_task(message: types.Message):
-    """
-    Обработчик одной задачи (аудио, видео, ссылки).
-    """
 
-    # ---------- Видео / аудио файл ----------
-    if message.video or message.audio or message.document:
-        file_id = (
-            message.video.file_id
-            if message.video
-            else message.audio.file_id
-            if message.audio
-            else message.document.file_id
-        )
+# -------------------------------
+#   Команда /start
+# -------------------------------
+@dp.message(CommandStart())
+async def start(message: types.Message):
+    await message.answer("👋 Отправьте аудио, видео или ссылку (YouTube / соц. сети / прямой URL)")
 
-        file = await message.bot.get_file(file_id)
-        file_path = f"downloads/{file.file_unique_id}.mp4"
-        os.makedirs("downloads", exist_ok=True)
 
-        await message.answer("⬇️ Скачиваю файл...")
+# -------------------------------
+#   Приём медиа
+# -------------------------------
+@dp.message(lambda m: m.video or m.audio or m.document)
+async def handle_media(message: types.Message):
 
-        await message.bot.download_file(file.file_path, file_path)
+    await message.answer("🔄 Загружаю файл, подождите...")
 
-        await message.answer("🎧 Обрабатываю аудио/видео...")
+    async def task():
+        file_info = None
+        if message.document:
+            file_info = await bot.get_file(message.document.file_id)
+            filename = message.document.file_name
+        elif message.video:
+            file_info = await bot.get_file(message.video.file_id)
+            filename = "video.mp4"
+        elif message.audio:
+            file_info = await bot.get_file(message.audio.file_id)
+            filename = "audio.mp3"
+
+        file_path = f"/tmp/{filename}"
+        await bot.download_file(file_info.file_path, file_path)
 
         transcript, summary = await process_audio_or_video(file_path)
+        formatted = format_transcript(transcript)
 
-        formatted_text = format_transcript(transcript)
+        pdf = generate_pdf(formatted, summary)
+        md = generate_markdown(formatted, summary)
 
-        pdf_path = generate_pdf(formatted_text, summary)
-        md_path = generate_markdown(formatted_text, summary)
+        await message.answer_document(FSInputFile(pdf))
+        await message.answer_document(FSInputFile(md))
 
-        await message.answer("📄 Отправляю файлы...")
+        os.remove(file_path)
+        os.remove(pdf)
+        os.remove(md)
 
-        await message.answer_document(FSInputFile(pdf_path))
-        await message.answer_document(FSInputFile(md_path))
-        return
+    await enqueue(message, task())
 
-    # ---------- Ссылка ----------
-    if message.text:
-        url = message.text.strip()
 
-        await message.answer("🔗 Обнаружена ссылка. Проверяю...")
+# -------------------------------
+#   Приём ссылок
+# -------------------------------
+@dp.message(lambda m: m.text and ("http" in m.text))
+async def handle_link(message: types.Message):
 
-        if not (
-            is_direct_link(url)
-            or is_social_link(url)
-            or is_youtube_link(url)
-        ):
-            await message.answer("❌ Неподдерживаемая ссылка.")
+    await message.answer("🔗 Скачиваю файл по ссылке...")
+
+    async def task():
+        file_path = await download_from_link(message.text, message)
+
+        if not file_path:
+            await message.answer("❌ Не удалось скачать файл")
             return
 
-        await message.answer("⬇️ Скачиваю файл по ссылке...")
+        transcript, summary = await process_audio_or_video(file_path)
+        formatted = format_transcript(transcript)
 
-        downloaded_file = await download_any(url)
+        pdf = generate_pdf(formatted, summary)
+        md = generate_markdown(formatted, summary)
 
-        await message.answer("🎧 Обрабатываю контент...")
+        await message.answer_document(FSInputFile(pdf))
+        await message.answer_document(FSInputFile(md))
 
-        transcript, summary = await process_audio_or_video(downloaded_file)
+        os.remove(file_path)
+        os.remove(pdf)
+        os.remove(md)
 
-        formatted_text = format_transcript(transcript)
-
-        pdf_path = generate_pdf(formatted_text, summary)
-        md_path = generate_markdown(formatted_text, summary)
-
-        await message.answer_document(FSInputFile(pdf_path))
-        await message.answer_document(FSInputFile(md_path))
-        return
-
-    await message.answer("❌ Не могу обработать ваш запрос.")
+    await enqueue(message, task())
 
 
-# ----------------- Aiogram BOT -----------------
-
-load_dotenv()
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
-
-
-@dp.message(CommandStart())
-async def send_welcome(message: types.Message):
-    await message.answer(
-        "👋 Привет! Отправь видео, аудио или ссылку — я всё обработаю и сделаю текст + PDF."
-    )
-
-
-@dp.message()
-async def on_message(message: types.Message):
-    """
-    Вместо обработки — кладём задачу в очередь.
-    """
-    await message.answer("⏳ Задача поставлена в очередь. Ожидайте...")
-    await queue.put(message)
-
-
-# ----------------- MAIN -----------------
-
+# -------------------------------
+#   Запуск
+# -------------------------------
 async def main():
-    asyncio.create_task(worker())
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
