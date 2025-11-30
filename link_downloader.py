@@ -1,87 +1,98 @@
 import os
 import re
-import uuid
+import asyncio
 import yt_dlp
 import aiohttp
-import asyncio
 
-# --- Проверяем тип ссылки ---
+# -------------------- Проверка типов ссылок --------------------
+
 def is_youtube_link(url: str) -> bool:
     return "youtube.com" in url or "youtu.be" in url
 
 def is_social_link(url: str) -> bool:
-    SOCIAL_PATTERNS = [
-        "tiktok.com",
-        "instagram.com",
-        "vk.com",
-        "twitter.com",
-        "x.com",
-        "facebook.com",
-        "fb.watch",
-        "reddit.com",
-    ]
-    return any(p in url for p in SOCIAL_PATTERNS)
+    return any(s in url for s in [
+        "instagram.com", "tiktok.com", "vm.tiktok.com",
+        "facebook.com", "twitter.com", "x.com",
+        "vk.com", "rutube.ru"
+    ])
 
 def is_direct_link(url: str) -> bool:
-    return url.lower().startswith(("http://", "https://")) and url.split("?")[0].split("/")[-1].count(".") >= 1
+    return url.lower().endswith((
+        ".mp4", ".mov", ".avi", ".mkv",
+        ".mp3", ".wav", ".m4a", ".aac"
+    ))
 
+# -------------------- Прогресс-бар YT-DLP --------------------
 
-# --- Скачать напрямую ---
-async def download_direct(url: str, folder="downloads"):
-    os.makedirs(folder, exist_ok=True)
-    filename = url.split("/")[-1].split("?")[0]
-    filepath = os.path.join(folder, filename)
+class ProgressHook:
+    def __init__(self, callback):
+        self.callback = callback
+
+    async def __call__(self, d):
+        if d.get("status") == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            downloaded = d.get("downloaded_bytes", 0)
+
+            if total:
+                percent = int(downloaded / total * 100)
+                await self.callback(percent)
+
+# -------------------- Скачивание YouTube / соцсетей --------------------
+
+async def download_yt(url: str, on_progress=None) -> str:
+    os.makedirs("downloads", exist_ok=True)
+    out_path = "downloads/%(id)s.%(ext)s"
+
+    loop = asyncio.get_running_loop()
+
+    hook = ProgressHook(on_progress) if on_progress else None
+
+    ydl_opts = {
+        "format": "bestvideo+bestaudio/best",
+        "outtmpl": out_path,
+        "merge_output_format": "mp4",
+        "progress_hooks": [hook] if hook else [],
+        "noplaylist": True,
+    }
+
+    def extract():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            return ydl.prepare_filename(info)
+
+    file_path = await loop.run_in_executor(None, extract)
+    return file_path
+
+# -------------------- Прямое скачивание больших файлов --------------------
+
+async def download_direct(url: str, on_progress=None) -> str:
+    os.makedirs("downloads", exist_ok=True)
+    filename = "downloads/" + os.path.basename(url.split("?")[0])
 
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
-            if resp.status != 200:
-                raise Exception("Ошибка скачивания: статус", resp.status)
-
             total = int(resp.headers.get("Content-Length", 0))
             downloaded = 0
 
-            with open(filepath, "wb") as f:
-                async for chunk in resp.content.iter_chunked(1024 * 256):
+            with open(filename, "wb") as f:
+                async for chunk in resp.content.iter_chunked(1024 * 512):
                     f.write(chunk)
                     downloaded += len(chunk)
-                    if total:
-                        progress = int(downloaded / total * 100)
-                        print(f"⏳ Прогресс: {progress}%")
 
-    return filepath
+                    if total and on_progress:
+                        percent = int(downloaded / total * 100)
+                        await on_progress(percent)
 
+    return filename
 
-# --- Скачать соцсети / YouTube через yt-dlp ---
-async def download_with_ytdlp(url: str, folder="downloads"):
-    os.makedirs(folder, exist_ok=True)
-    filename = f"{uuid.uuid4()}.mp4"
-    filepath = os.path.join(folder, filename)
+# -------------------- Универсальное скачивание --------------------
 
-    ydl_opts = {
-        "outtmpl": filepath,
-        "format": "bestvideo+bestaudio/best",
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "merge_output_format": "mp4",
-    }
-
-    def run():
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, run)
-
-    return filepath
-
-
-# --- Универсальная функция ---
-async def download_any(url: str):
-    if is_direct_link(url):
-        return await download_direct(url)
+async def download_any(url: str, on_progress=None) -> str:
 
     if is_youtube_link(url) or is_social_link(url):
-        return await download_with_ytdlp(url)
+        return await download_yt(url, on_progress)
 
-    raise Exception("⛔ Неподдерживаемая ссылка")
+    if is_direct_link(url):
+        return await download_direct(url, on_progress)
+
+    raise ValueError("Неподдерживаемая ссылка")
