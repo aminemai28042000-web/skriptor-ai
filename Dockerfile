@@ -34,7 +34,9 @@ COPY . .
 #  Environment
 # ----------------------------
 ENV PYTHONUNBUFFERED=1
-ENV AIOHTTP_CLIENT_MAX_SIZE=2147483648   # 2 GB
+
+# Максимальный размер принимаемых файлов aiohttp (2GB)
+ENV AIOHTTP_CLIENT_MAX_SIZE=2147483648
 
 # ----------------------------
 #  Expose webhook port
