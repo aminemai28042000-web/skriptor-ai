@@ -1,16 +1,26 @@
 import asyncio
+import os
 from openai import OpenAI
 from config import OPENAI_API_KEY
 
+# -------------------------------
+# Render FIX — отключаем системные прокси
+# -------------------------------
+os.environ.pop("HTTP_PROXY", None)
+os.environ.pop("HTTPS_PROXY", None)
+os.environ.pop("ALL_PROXY", None)
+os.environ.pop("http_proxy", None)
+os.environ.pop("https_proxy", None)
+os.environ.pop("all_proxy", None)
+
+# -------------------------------
+# OpenAI клиент
+# -------------------------------
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 
 async def process_audio_or_video(file_path: str) -> str:
-    """
-    Асинхронная транскрибация аудио/видео с Whisper.
-    Оборачиваем синхронный вызов Whisper в asyncio.to_thread(),
-    чтобы worker не зависал.
-    """
+    """Асинхронная транскрибация аудио/видео через Whisper."""
 
     def _transcribe():
         try:
@@ -23,5 +33,4 @@ async def process_audio_or_video(file_path: str) -> str:
         except Exception as e:
             return f"Ошибка транскрибации: {str(e)}"
 
-    # выполняем синхронный код в отдельном потоке
     return await asyncio.to_thread(_transcribe)
