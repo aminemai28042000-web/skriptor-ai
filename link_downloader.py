@@ -1,104 +1,87 @@
 import os
-import re
+import yt_dlp
 import aiohttp
 import asyncio
-import logging
-import tempfile
-from aiogram import Bot
+from typing import Optional, Callable
 
-from config import BOT_TOKEN
-
-# Bot instance (needed for progress updates)
-bot = Bot(token=BOT_TOKEN)
-
-# ---------------------------------------------------------
-# Extract filename from URL
-# ---------------------------------------------------------
-def get_filename_from_url(url: str) -> str:
-    try:
-        name = url.split("/")[-1].split("?")[0]
-        if len(name) < 3:
-            return "downloaded_file"
-        return name
-    except:
-        return "downloaded_file"
+CHUNK_SIZE = 1024 * 512  # 512 KB
 
 
-# ---------------------------------------------------------
-# Send progress to Telegram
-# ---------------------------------------------------------
-async def send_progress(chat_id: int, pct: float):
-    try:
-        await bot.send_message(chat_id, f"⏳ Прогресс загрузки: {pct:.0f}%")
-    except:
-        pass
-
-
-# ---------------------------------------------------------
-# YouTube/TikTok/Instagram direct extractor (basic)
-# — In full future version we’ll expand this.
-# ---------------------------------------------------------
-async def maybe_extract_real_url(url: str) -> str:
+async def download_file(url: str, dest_path: str, progress_callback: Optional[Callable] = None):
     """
-    Простой предобработчик: если ссылка на соцсети — пользователь обычно
-    присылает страницу, а не прямой файл. Вернём как есть — скачивание всё
-    равно будет attempt-иться.
-    Позже сюда можно встроить pytube/tiktok-scraper и т.д.
+    Download direct file URL with progress updates.
     """
-    return url
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            resp.raise_for_status()
+            total = int(resp.headers.get("Content-Length", 0))
+            downloaded = 0
+
+            with open(dest_path, "wb") as f:
+                async for chunk in resp.content.iter_chunked(CHUNK_SIZE):
+                    f.write(chunk)
+                    downloaded += len(chunk)
+
+                    if progress_callback and total > 0:
+                        await progress_callback(int(downloaded / total * 100))
+
+    return dest_path
 
 
-# ---------------------------------------------------------
-# Streaming download (with progress)
-# ---------------------------------------------------------
-async def download_file_with_progress(
-    bot: Bot, chat_id: int, url: str
-) -> str | None:
+async def download_youtube(url: str, dest_path: str, progress_callback: Optional[Callable] = None):
+    """
+    Download YouTube video using yt-dlp with progress callback.
+    """
+    loop = asyncio.get_event_loop()
 
-    logging.info(f"⬇ Начинаю скачивание: {url}")
+    def hook(d):
+        if d.get("status") == "downloading":
+            if progress_callback:
+                percent_raw = d.get("_percent_str", "0%").replace("%", "")
+                try:
+                    percent = int(float(percent_raw))
+                    loop.create_task(progress_callback(percent))
+                except:
+                    pass
 
-    # Try extract real media link (YouTube/TikTok/etc)
-    url = await maybe_extract_real_url(url)
+    ydl_opts = {
+        "outtmpl": dest_path,
+        "format": "bestvideo+bestaudio/best",
+        "merge_output_format": "mp4",
+        "progress_hooks": [hook],
+        "noprogress": True,
+        "nocheckcertificate": True,
+    }
 
-    # temp directory
-    temp_dir = tempfile.gettempdir()
-    filename = get_filename_from_url(url)
-    temp_path = os.path.join(temp_dir, filename)
+    def run():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
 
-    # Request + stream
+    await asyncio.to_thread(run)
+    return dest_path
+
+
+async def download_social(url: str, dest_path: str, progress_callback: Optional[Callable] = None):
+    """
+    Download Instagram, TikTok, Facebook using yt-dlp.
+    """
+    return await download_youtube(url, dest_path, progress_callback)
+
+
+async def smart_download(url: str, dest_path: str, progress_callback: Optional[Callable] = None):
+    """
+    Smart downloader detects source automatically.
+    """
+    url_lower = url.lower()
+
     try:
-        timeout = aiohttp.ClientTimeout(total=None)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url) as resp:
+        if "youtube.com" in url_lower or "youtu.be" in url_lower:
+            return await download_youtube(url, dest_path, progress_callback)
 
-                if resp.status != 200:
-                    logging.error(f"❌ HTTP {resp.status}")
-                    return None
+        if any(s in url_lower for s in ["tiktok.com", "instagram.com", "facebook.com"]):
+            return await download_social(url, dest_path, progress_callback)
 
-                total = resp.headers.get("Content-Length")
-                total = int(total) if total else None
-                downloaded = 0
-                last_pct_update = 0
-
-                with open(temp_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(1024 * 1024):
-                        if not chunk:
-                            continue
-
-                        f.write(chunk)
-                        downloaded += len(chunk)
-
-                        # progress calculation
-                        if total:
-                            pct = downloaded / total * 100
-                            # update every 5%
-                            if pct - last_pct_update >= 5:
-                                last_pct_update = pct
-                                await send_progress(chat_id, pct)
-
-        logging.info(f"✔ Файл скачан: {temp_path}")
-        return temp_path
+        return await download_file(url, dest_path, progress_callback)
 
     except Exception as e:
-        logging.error(f"❌ Ошибка скачивания: {e}")
-        return None
+        raise RuntimeError(f"Download failed: {str(e)}")
