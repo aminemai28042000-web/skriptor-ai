@@ -1,49 +1,32 @@
-# ----------------------------
-#  Base image
-# ----------------------------
 FROM python:3.10-slim
 
-# ----------------------------
-#  System dependencies
-# ----------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    git \
-    curl \
+# обновление системы
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        redis-server \
+        supervisor \
+        ffmpeg \
+        wget \
+        curl \
+        git \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ----------------------------
-#  Workspace
-# ----------------------------
 WORKDIR /app
 
-# ----------------------------
-#  Copy requirements first (cache)
-# ----------------------------
+# копируем зависимости
 COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-RUN pip install --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
-
-# ----------------------------
-#  Copy project
-# ----------------------------
+# копируем проект
 COPY . .
 
-# ----------------------------
-#  Environment
-# ----------------------------
-ENV PYTHONUNBUFFERED=1
+# копируем конфиг supervisor
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Максимальный размер принимаемых файлов aiohttp (2GB)
+# Разрешить большие файлы
 ENV AIOHTTP_CLIENT_MAX_SIZE=2147483648
 
-# ----------------------------
-#  Expose webhook port
-# ----------------------------
 EXPOSE 8000
 
-# ----------------------------
-#  Start command
-# ----------------------------
-CMD ["python", "server.py"]
+CMD ["/usr/bin/supervisord"]
