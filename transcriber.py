@@ -2,8 +2,8 @@ import os
 from openai import OpenAI
 from config import OPENAI_API_KEY
 
-client = OpenAI(api_key=OPENAI_API_KEY)
-
+# В v1.x клиент создаётся БЕЗ api_key
+client = OpenAI()
 
 async def process_audio_or_video(file_path: str) -> str:
     """
