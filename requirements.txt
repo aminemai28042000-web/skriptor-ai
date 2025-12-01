@@ -1,7 +1,0 @@
-openai>=1.12.0
-aiogram==3.3.0
-aiohttp
-yt-dlp
-fpdf
-markdown
-python-dotenv
