@@ -1,4 +1,4 @@
-import os
+import asyncio
 from openai import OpenAI
 from config import OPENAI_API_KEY
 
@@ -7,22 +7,21 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 async def process_audio_or_video(file_path: str) -> str:
     """
-    Асинхронная обёртка над синхронным Whisper API,
-    чтобы не блокировать event loop.
+    Асинхронная транскрибация аудио/видео с Whisper.
+    Оборачиваем синхронный вызов Whisper в asyncio.to_thread(),
+    чтобы worker не зависал.
     """
 
-    try:
-        # Whisper в новом SDK работает синхронно → оборачиваем в asyncio.to_thread
-        def _transcribe():
+    def _transcribe():
+        try:
             with open(file_path, "rb") as f:
                 response = client.audio.transcriptions.create(
-                    file=f,
-                    model="whisper-1"
+                    model="whisper-1",
+                    file=f
                 )
             return response.text.strip()
+        except Exception as e:
+            return f"Ошибка транскрибации: {str(e)}"
 
-        text = await asyncio.to_thread(_transcribe)
-        return text
-
-    except Exception as e:
-        return f"Ошибка транскрибации: {str(e)}"
+    # выполняем синхронный код в отдельном потоке
+    return await asyncio.to_thread(_transcribe)
