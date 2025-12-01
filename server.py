@@ -1,7 +1,6 @@
-import asyncio
+import aiohttp
 from fastapi import FastAPI, Request
 from aiogram import Bot
-import aiohttp
 from worker_queue import enqueue_task
 from config import TELEGRAM_TOKEN, WEBHOOK_SECRET, WEBHOOK_URL
 
@@ -15,21 +14,16 @@ def verify_secret(request: Request):
 
 
 @app.on_event("startup")
-async def on_startup():
-    """
-    Устанавливаем вебхук при запуске контейнера.
-    """
+async def startup():
     async with aiohttp.ClientSession() as session:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
-
         payload = {
             "url": WEBHOOK_URL,
             "secret_token": WEBHOOK_SECRET
         }
 
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
         async with session.post(url, data=payload) as resp:
-            data = await resp.text()
-            print("WEBHOOK SET RESPONSE:", data)
+            print("Webhook response:", await resp.text())
 
 
 @app.post("/webhook")
